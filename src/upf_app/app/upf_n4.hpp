@@ -33,6 +33,7 @@
 #include "itti_msg_n4.hpp"
 #include "msg_pfcp.hpp"
 #include "upf_pfcp_association.hpp"
+#include "3gpp_29.244.h"
 
 #include <thread>
 
@@ -57,8 +58,11 @@ class upf_n4 : public pfcp::pfcp_l4_stack {
 
  public:
   upf_n4();
+  ~upf_n4(){};
   upf_n4(upf_n4 const&) = delete;
   void operator=(upf_n4 const&) = delete;
+
+  uint32_t get_recovery_timestamp() const;
 
   void handle_itti_msg(itti_n4_heartbeat_request& s){};
   void handle_itti_msg(itti_n4_heartbeat_response& s){};
@@ -125,6 +129,8 @@ class upf_n4 : public pfcp::pfcp_l4_stack {
       pfcp::pfcp_msg& msg, const endpoint& remote_endpoint);
 
   void time_out_itti_event(const uint32_t timer_id);
+
+  void send_pfcp_node_report_request(const pfcp::node_id_t& peer_node_id, const pfcp::pfcp_node_report_request& report_ies);
 };
 }  // namespace app
 }  // namespace upf

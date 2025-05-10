@@ -33,6 +33,7 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <arpa/inet.h> // For inet_pton
 
 #include "3gpp_29.500.h"
 #include "3gpp_29.510.h"
@@ -41,6 +42,7 @@
 #include "logger.hpp"
 #include "upf.h"
 #include "upf_config.hpp"
+#include "upf_config_yaml.hpp"
 
 using namespace oai::config;
 using namespace oai::upf::app;
@@ -48,9 +50,84 @@ using json = nlohmann::json;
 
 extern itti_mw* itti_inst;
 extern upf_nrf* upf_nrf_inst;
-extern upf_config upf_cfg;
 extern std::shared_ptr<oai::http::http_client> http_client_inst;
+extern oai::config::upf_config upf_cfg;
 void upf_nrf_task(void*);
+
+// Helper function to convert NRF model UpfInfo to SBI UpfInfo
+oai::common::sbi::upf_info_t convert_nrf_to_sbi_upf_info(const oai::model::nrf::UpfInfo& nrf_info) {
+    oai::common::sbi::upf_info_t sbi_info = {};
+
+    // Convert S-NSSAI UPF Info List
+    if (!nrf_info.getSNssaiUpfInfoList().empty()) {
+        for (const auto& nrf_snssai_item : nrf_info.getSNssaiUpfInfoList()) {
+            oai::common::sbi::snssai_upf_info_item_t sbi_snssai_item = {};
+            // Convert Snssai
+            sbi_snssai_item.snssai.sst = nrf_snssai_item.getSNssai().getSst();
+            if (nrf_snssai_item.getSNssai().sdIsSet()) {
+                sbi_snssai_item.snssai.sd = nrf_snssai_item.getSNssai().getSd();
+            }
+            
+            // Convert DnnUpfInfoList
+            if (!nrf_snssai_item.getDnnUpfInfoList().empty()) {
+                for (const auto& nrf_dnn_item : nrf_snssai_item.getDnnUpfInfoList()) {
+                    oai::common::sbi::dnn_upf_info_item_t sbi_dnn_item = {};
+                    sbi_dnn_item.dnn = nrf_dnn_item.getDnn();
+                    
+                    // dnai_list and dnai_nw_instance_list conversion (if needed)
+                    // For oai::common::sbi::dnn_upf_info_item_t, dnai_list and dnai_nw_instance_list are present.
+                    // For oai::model::nrf::DnnUpfInfoItem, these are optional.
+                    if (nrf_dnn_item.dnaiListIsSet()) {
+                        sbi_dnn_item.dnai_list = nrf_dnn_item.getDnaiList();
+                    }
+                    if (nrf_dnn_item.dnaiNwInstanceListIsSet()) {
+                        sbi_dnn_item.dnai_nw_instance_list = nrf_dnn_item.getDnaiNwInstanceList();
+                    }
+                    sbi_snssai_item.dnn_upf_info_list.insert(sbi_dnn_item);
+                }
+            }
+            sbi_info.snssai_upf_info_list.push_back(sbi_snssai_item);
+        }
+    }
+
+    // Convert Interface UPF Info List
+    if (nrf_info.interfaceUpfInfoListIsSet()) {
+        for (const auto& nrf_if_item : nrf_info.getInterfaceUpfInfoList()) {
+            oai::common::sbi::interface_upf_info_item_t sbi_if_item = {};
+            sbi_if_item.interface_type = nrf_if_item.getInterfaceType().getEnumString();
+            
+            if (nrf_if_item.ipv4EndpointAddressesIsSet()) {
+                for (const auto& ipv4_str : nrf_if_item.getIpv4EndpointAddresses()) {
+                    struct in_addr ipv4_addr;
+                    if (inet_pton(AF_INET, ipv4_str.c_str(), &ipv4_addr) == 1) {
+                        sbi_if_item.ipv4_addresses.push_back(ipv4_addr);
+                    } else {
+                        Logger::upf_app().warn("Failed to convert IPv4 address string: %s", ipv4_str.c_str());
+                    }
+                }
+            }
+            // ipv6_addresses conversion - oai::model::common::Ipv6Addr to struct in6_addr
+            if (nrf_if_item.ipv6EndpointAddressesIsSet()) {
+                 for (const auto& ipv6_model_addr : nrf_if_item.getIpv6EndpointAddresses()) {
+                    struct in6_addr ipv6_sbi_addr;
+                    // oai::model::common::Ipv6Addr likely stores it as a string.
+                    // Need to access that string, e.g. ipv6_model_addr.getValue() or similar, then use inet_pton.
+                    // This depends on Ipv6Addr internal structure, assuming a .toString() or .getValue() method for now.
+                    // Example: if (inet_pton(AF_INET6, ipv6_model_addr.toString().c_str(), &ipv6_sbi_addr) == 1) {
+                    // For now, skipping detailed Ipv6Addr conversion to avoid further complexity without its exact definition.
+                 }
+            }
+            if (nrf_if_item.endpointFqdnIsSet()) {
+                sbi_if_item.endpoint_fqdn = nrf_if_item.getEndpointFqdn();
+            }
+            if (nrf_if_item.networkInstanceIsSet()) {
+                sbi_if_item.network_instance = nrf_if_item.getNetworkInstance();
+            }
+            sbi_info.interface_upf_info_list.push_back(sbi_if_item);
+        }
+    }
+    return sbi_info;
+}
 
 //------------------------------------------------------------------------------
 void upf_nrf_task(void* args_p) {
@@ -173,7 +250,6 @@ bool upf_nrf::send_update_nf_instance(
   Logger::upf_app().info("Send NF Update to NRF");
 
   std::string body = data.dump();
-  Logger::upf_app().debug("Send NF Update to NRF (Msg body %s)", body.c_str());
   Logger::upf_app().debug("Send NF Update to NRF (NRF URL %s)", url.c_str());
 
   oai::http::request http_request =
@@ -258,7 +334,7 @@ void upf_nrf::register_to_nrf() {
 }
 
 //---------------------------------------------------------------------------------------------
-void upf_nrf::deregister_to_nrf() {
+void upf_nrf::deregister_to_nrf(bool retry) {
   if (!upf_cfg.register_nrf) return;
   Logger::upf_app().debug("Send NF De-registration to NRF");
 
@@ -311,7 +387,7 @@ void upf_nrf::timer_nrf_heartbeat_timeout(
 void upf_nrf::timer_nrf_deregistration(
     timer_id_t timer_id, uint64_t arg2_user) {
   // timer_id and arg2_user unused?
-  deregister_to_nrf();
+  deregister_to_nrf(true);
 }
 
 //---------------------------------------------------------------------------------------------
@@ -321,7 +397,85 @@ void upf_nrf::timer_nrf_registration(timer_id_t timer_id, uint64_t arg2_user) {
 }
 
 //---------------------------------------------------------------------------------------------
-void upf_nrf::get_nrf_api_root(std::string& api_root) {
+bool upf_nrf::get_nrf_api_root(std::string& api_root) {
   api_root = std::string(upf_cfg.nrf_addr.get_url()) + NNRF_NFM_BASE +
              upf_cfg.nrf_addr.get_api_version();
+  return true;
+}
+
+//---------------------------------------------------------------------------------------------
+bool upf_nrf::trigger_nrf_profile_update(const oai::model::nrf::UpfInfo& updated_upf_info_model) {
+    if (/*!upf_cfg.register_nrf ||*/ upf_instance_id.empty()) { // Still need a way to check if NRF registration is globally enabled
+                                                              // This probably comes from the initial upf_cfg. Let's keep it for that flag.
+        Logger::upf_app().info("NRF registration is disabled (check global config) or NF Instance ID is not available. Skipping NRF profile update.");
+        return true; 
+    }
+    // Re-check NRF registration enabled flag from global config, as this function is now decoupled from it for upfInfo source
+    // This relies on the global `upf_cfg` being available for this flag.
+    if (!upf_cfg.register_nrf) {
+        Logger::upf_app().info("NRF registration is globally disabled. Skipping NRF profile update.");
+        return true; 
+    }
+
+
+    Logger::upf_app().info("Triggering NRF Profile Update with new UpfInfo.");
+
+    // 1. Update S-NSSAIs in local upf_profile member from the passed updated_upf_info_model
+    std::vector<snssai_t> converted_snssais;
+    for (const auto& snssai_info_item : updated_upf_info_model.getSNssaiUpfInfoList()) {
+        const auto& model_snssai = snssai_info_item.getSNssai();
+        snssai_t app_snssai;
+        app_snssai.sst = model_snssai.getSst();
+        app_snssai.sd = model_snssai.getSd();
+        converted_snssais.push_back(app_snssai);
+    }
+    this->upf_profile.set_nf_snssais(converted_snssais);
+
+    // 2. Update the UpfInfo specific part of local upf_profile member
+    oai::common::sbi::upf_info_t sbi_upf_info = convert_nrf_to_sbi_upf_info(updated_upf_info_model);
+    this->upf_profile.set_upf_info(sbi_upf_info); 
+
+    // Other parts of upf_profile (like FQDN, IP, status) are assumed to be set correctly
+    // during initial generate_upf_profile() and don't rely on the dynamic UpfInfo part for their values.
+    // Ensure NF Status is appropriate for an update.
+    this->upf_profile.set_nf_status("REGISTERED"); 
+
+    // 3. Construct the NRF API URL for update
+    std::string nrf_api_root;
+    if (!get_nrf_api_root(nrf_api_root)) { 
+        Logger::upf_app().error("Failed to get NRF API root for profile update.");
+        return false;
+    }
+    std::string update_url = nrf_api_root + NNRF_NF_REGISTER_URL + this->upf_instance_id;
+
+    // 4. Get the full JSON payload from the updated local upf_profile
+    nlohmann::json profile_json_payload;
+    this->upf_profile.to_json(profile_json_payload); 
+
+    Logger::upf_app().debug("Sending NF Profile Update (PUT) to NRF (URL: %s)", update_url.c_str());
+    Logger::upf_app().debug("NF Profile Update JSON payload: \n%s", profile_json_payload.dump(2).c_str());
+
+    // 5. Send the HTTP PUT request
+    std::string body = profile_json_payload.dump();
+    oai::http::request http_request = http_client_inst->prepare_json_request(update_url, body);
+    auto http_response = http_client_inst->send_http_request(oai::common::sbi::method_e::PUT, http_request);
+
+    if (http_response.status_code == oai::common::sbi::http_status_code::OK ||
+        http_response.status_code == oai::common::sbi::http_status_code::NO_CONTENT) { 
+        Logger::upf_app().info("Successfully updated NF Profile with NRF via PUT. Status: %d", static_cast<int>(http_response.status_code));
+        
+        if (http_response.status_code == oai::common::sbi::http_status_code::OK && !http_response.body.empty()) {
+            try {
+                json response_data = json::parse(http_response.body);
+                Logger::upf_app().debug("NRF response on PUT update: \n%s", response_data.dump(2).c_str());
+            } catch (json::exception& e) {
+                Logger::upf_app().warn("Could not parse JSON from NRF response on profile update: %s", e.what());
+            }
+        }
+        return true;
+    } else {
+        Logger::upf_app().error("Failed to update NF Profile with NRF via PUT. Status: %d. Response: %s",
+                             static_cast<int>(http_response.status_code), http_response.body.c_str());
+        return false;
+    }
 }

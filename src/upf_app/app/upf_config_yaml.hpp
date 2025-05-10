@@ -25,6 +25,11 @@
 #include "upf_config.hpp"
 #include "common_defs.h"
 #include "UpfInfo.h"
+#include <mutex>
+#include <string>
+#include <vector>
+#include <map>
+#include <nlohmann/json.hpp>
 
 constexpr auto UPF_CONFIG_INSTANCE_ID            = "instance_id";
 constexpr auto UPF_CONFIG_INSTANCE_ID_LABEL      = "Instance ID";
@@ -147,16 +152,18 @@ class upf : public nf {
   int_config_value m_instance_id;
   upf_support_features m_upf_support_features;
   oai::model::nrf::UpfInfo m_upf_info;
+  mutable std::mutex m_upf_info_mutex;
   string_config_value m_remote_n6;
   std::vector<string_config_value> m_smf_list;
-  // the reason to use a map is to have support for different interfaces in the
-  // future now we use N3, N6 or N4 as key, but then we can have N3_NWI to
-  // support multiple use cases or several N6/N9 (e.g. for UL CL)
   std::map<std::string, upf_interface_config> m_interfaces;
 
   void create_or_update_interface(
       const std::string& iface_type, const YAML::Node& node,
       const upf_interface_config& default_config);
+
+  bool parse_and_validate_upf_info(const YAML::Node& upf_info_node, oai::model::nrf::UpfInfo& target_upf_info);
+
+  void trigger_pfcp_node_reports();
 
  public:
   explicit upf(
@@ -169,13 +176,15 @@ class upf : public nf {
   void validate() override;
 
   [[nodiscard]] std::string to_string(const std::string& indent) const override;
-  [[nodiscard]] const uint32_t get_instance_id() const;
-  [[nodiscard]] const std::string get_remote_n6() const;
-  [[nodiscard]] const std::vector<string_config_value> get_smf_list() const;
+  [[nodiscard]] uint32_t get_instance_id() const;
+  [[nodiscard]] std::string get_remote_n6() const;
+  [[nodiscard]] std::vector<string_config_value> get_smf_list() const;
   [[nodiscard]] const upf_support_features& get_support_features() const;
-  [[nodiscard]] const oai::model::nrf::UpfInfo& get_upf_info() const;
+  [[nodiscard]] oai::model::nrf::UpfInfo get_upf_info() const;
   [[nodiscard]] const std::map<std::string, upf_interface_config>&
   get_interfaces() const;
+
+  bool reload_upf_info_from_node(const YAML::Node& upf_info_yaml_node);
 };
 
 }  // namespace oai::config

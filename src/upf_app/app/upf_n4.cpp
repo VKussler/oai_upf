@@ -50,6 +50,10 @@ void upf_n4_task(void*);
 
 //------------------------------------------------------------------------------
 
+uint32_t upf_n4::get_recovery_timestamp() const {
+  return static_cast<uint32_t>(recovery_time_stamp);
+}
+
 void upf_n4_task(void* args_p) {
   const task_id_t task_id = TASK_UPF_N4;
 
@@ -554,7 +558,6 @@ void upf_n4::handle_receive_pfcp_msg(
 
     case PFCP_PFCP_PFD_MANAGEMENT_REQUEST:
     case PFCP_PFCP_PFD_MANAGEMENT_RESPONSE:
-      //    case PFCP_ASSOCIATION_SETUP_REQUEST:
     case PFCP_ASSOCIATION_UPDATE_REQUEST:
     case PFCP_ASSOCIATION_UPDATE_RESPONSE:
     case PFCP_ASSOCIATION_RELEASE_REQUEST:
@@ -718,5 +721,19 @@ void upf_n4::time_out_itti_event(const uint32_t timer_id) {
   time_out_event(timer_id, TASK_UPF_N4, handled);
   if (!handled) {
     Logger::upf_n4().error("Timer %d not Found", timer_id);
+  }
+}
+
+void upf_n4::send_pfcp_node_report_request(
+    const pfcp::node_id_t& peer_node_id,
+    const pfcp::pfcp_node_report_request& report_ies) {
+  if (peer_node_id.node_id_type == pfcp::NODE_ID_TYPE_IPV4_ADDRESS) {
+    endpoint r_endpoint = endpoint(peer_node_id.u1.ipv4_address, pfcp::default_port);
+    uint64_t trxn_id = generate_trxn_id();
+
+    send_request(r_endpoint, 0ULL, report_ies, TASK_UPF_N4, trxn_id); 
+    Logger::upf_n4().info("Sent PFCP Node Report Request to SMF Node ID: %s (Trxn ID: %lu)", peer_node_id.toString().c_str(), trxn_id);
+  } else {
+    Logger::upf_n4().warn("PFCP Node Report Request not sent to non-IPv4 peer Node ID: %s (Only IPv4 supported for now in this path)", peer_node_id.toString().c_str());
   }
 }

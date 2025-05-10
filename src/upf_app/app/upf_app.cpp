@@ -192,7 +192,7 @@ upf_app::~upf_app() {
 //------------------------------------------------------------------------------
 void upf_app::stop() {
   if (upf_nrf_inst) {
-    upf_nrf_inst->deregister_to_nrf();
+    upf_nrf_inst->deregister_to_nrf(false);
   }
   // TODO: upf_n4, pfcp_switch
 }

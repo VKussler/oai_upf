@@ -26,6 +26,7 @@
 #include "upf_config.hpp"
 #include "upf_config_yaml.hpp"
 #include "sbi_helper.hpp"
+#include "config_file_monitor.h"
 
 #include <boost/asio.hpp>
 #include <iostream>
@@ -70,6 +71,7 @@ bool single_teardown_call;
 
 std::unique_ptr<upf_config_yaml> upf_cfg_yaml            = nullptr;
 std::shared_ptr<oai::http::http_client> http_client_inst = nullptr;
+std::unique_ptr<oai::config::ConfigFileMonitor> cfg_monitor_inst = nullptr;
 //------------------------------------------------------------------------------
 void my_app_signal_handler(int s) {
   auto shutdown_start = std::chrono::system_clock::now();
@@ -81,6 +83,14 @@ void my_app_signal_handler(int s) {
   // shutdown procedure in the logs even in case of off-logging
   Logger::set_level(spdlog::level::debug);
   Logger::system().info("Caught signal %d", s);
+
+  // <<< ADD STOP MONITORING >>>
+  if (cfg_monitor_inst) {
+      Logger::system().info("Stopping configuration file monitor...");
+      cfg_monitor_inst->stop_monitoring();
+      Logger::system().info("Configuration file monitor stopped.");
+  }
+  // <<< END STOP MONITORING >>>
 
   // Stop on-going tasks
   if (upf_app_inst) {
@@ -159,6 +169,25 @@ int main(int argc, char** argv) {
   // Convert from YAML to internal structure
   upf_cfg_yaml->to_upf_config(upf_cfg);
   upf_cfg_yaml->display();
+
+  // <<< START ConfigFileMonitor INTEGRATION >>>
+  std::shared_ptr<oai::config::nf> local_nf_base = upf_cfg_yaml->get_local();
+  oai::config::upf* upf_instance_for_monitor_ptr = nullptr;
+  if (local_nf_base) {
+      upf_instance_for_monitor_ptr = dynamic_cast<oai::config::upf*>(local_nf_base.get());
+  }
+
+  if (upf_instance_for_monitor_ptr) {
+      Logger::upf_app().info("Initializing configuration file monitor for: %s", conf_file_name.c_str());
+      // conf_file_name is the path passed via -c, which is etc/config.yaml (symlink)
+      cfg_monitor_inst = std::make_unique<oai::config::ConfigFileMonitor>(conf_file_name, upf_instance_for_monitor_ptr);
+      cfg_monitor_inst->start_monitoring();
+  } else {
+      Logger::upf_app().error("Failed to get oai::config::upf instance. Configuration file monitor WILL NOT start.");
+      // Decide if this is a critical error that should prevent UPF from starting.
+      // For now, just log and continue.
+  }
+  // <<< END ConfigFileMonitor INTEGRATION >>>
 
   // HTTP Client
   // HTTP Client

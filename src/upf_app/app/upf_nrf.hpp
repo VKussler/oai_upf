@@ -34,6 +34,7 @@
 
 #include "itti.hpp"
 #include "3gpp_29.510.h"
+#include "../../../common-src/model/nrf/UpfInfo.h"
 #include "upf_profile.hpp"
 
 namespace oai {
@@ -93,7 +94,7 @@ class upf_nrf {
   /**
    * Trigger NF de-registration to NRF
    */
-  void deregister_to_nrf();
+  void deregister_to_nrf(bool retry);
 
   /*
    * Generate a random UUID for UPF instance
@@ -138,7 +139,10 @@ class upf_nrf {
    * @param [std::string& ] api_root: NRF's API Root
    * @return void
    */
-  void get_nrf_api_root(std::string& api_root);
+  bool get_nrf_api_root(std::string& nrf_api_root);
+
+  // <<< MODIFIED METHOD signature for dynamic UpfInfo update >>>
+  bool trigger_nrf_profile_update(const oai::model::nrf::UpfInfo& updated_upf_info_model);
 };
 }  // namespace app
 }  // namespace upf

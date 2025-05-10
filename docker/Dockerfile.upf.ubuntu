@@ -63,7 +63,7 @@ RUN ./build_upf --install-deps --force
 FROM oai-upf-base as oai-upf-builder
 # Copy the rest of source code
 COPY . /openair-upf
-# Building UPF
+# Building UPF                     RUN ./build_upf --clean --Verbose --build-type Release --jobs && \
 WORKDIR /openair-upf/build/scripts
 RUN ./build_upf --clean --Verbose --build-type Release --jobs && \
     ldd /openair-upf/build/upf/build/upf && \

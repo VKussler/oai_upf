@@ -23,11 +23,24 @@
 
 #include <boost/algorithm/string.hpp>
 #include <regex>
+#include <sstream>
 
 #include "conv.hpp"
 #include "conversions.hpp"
 #include "fqdn.hpp"
 #include "logger.hpp"
+#include <nlohmann/json.hpp>
+#include "yaml-cpp/yaml.h"
+#include "upf_pfcp_association.hpp"
+#include "pfcp.hpp"
+#include "upf_nrf.hpp"
+
+// Forward declaration or include for upf_nrf if not already present
+// Likely upf_nrf.hpp should be included if upf_nrf_inst is used.
+// #include "upf_nrf.hpp" // Might be needed here
+
+// Assuming upf_nrf_inst is an accessible global/static pointer to the upf_nrf instance
+extern oai::upf::app::upf_nrf* upf_nrf_inst;
 
 namespace oai::config {
 
@@ -99,15 +112,51 @@ upf::upf(
     const std::string& name, const std::string& host, const sbi_interface& sbi,
     const std::map<std::string, upf_interface_config>& interfaces)
     : nf(name, host, sbi),
+      m_instance_id(UPF_CONFIG_INSTANCE_ID_LABEL, 0),
       m_upf_support_features(false, false, false),
+      m_remote_n6(UPF_CONFIG_REMOTE_N6_GW_LABEL, ""),
       m_interfaces(interfaces) {
-  model::nrf::SnssaiUpfInfoItem item;
+  set_config_name(name);
+  oai::model::nrf::SnssaiUpfInfoItem item;
   item.setSNssai(DEFAULT_SNSSAI);
   item.setDnnUpfInfoList(DEFAULT_DNN_LIST);
   m_upf_info.setSNssaiUpfInfoList(
       std::vector<oai::model::nrf::SnssaiUpfInfoItem>{item});
 }
 
+//------------------------------------------------------------------------------
+bool upf::parse_and_validate_upf_info(const YAML::Node& upf_info_yaml_node, oai::model::nrf::UpfInfo& target_upf_info) {
+    if (!upf_info_yaml_node || !upf_info_yaml_node.IsMap()) {
+        Logger::system().error("UPF Info YAML node is not a valid map or is missing for parsing.\\n");
+        return false;
+    }
+
+    try {
+        nlohmann::json upf_info_json = oai::utils::conversions::yaml_to_json(upf_info_yaml_node, false);
+        nlohmann::from_json(upf_info_json, target_upf_info);
+
+        std::stringstream validation_ss_msg;
+        if (!target_upf_info.validate(validation_ss_msg)) {
+            Logger::system().error("Validation failed for parsed UpfInfo: {}\\n", validation_ss_msg.str());
+            return false;
+        }
+        Logger::system().info("Successfully parsed and validated UpfInfo from YAML node.\\n");
+        return true;
+
+    } catch (const YAML::Exception& e) {
+        Logger::system().error("YAML parsing exception while processing UpfInfo: {}\\n", e.what());
+        return false;
+    } catch (const nlohmann::json::exception& e) {
+        Logger::system().error("JSON processing exception while processing UpfInfo (from YAML conversion): {}\\n", e.what());
+        return false;
+    } catch (const std::exception& e) {
+        Logger::system().error("Standard exception while processing UpfInfo: {}\\n", e.what());
+        return false;
+    }
+    return false;
+}
+
+//------------------------------------------------------------------------------
 void upf::from_yaml(const YAML::Node& node) {
   nf::from_yaml(node);
   create_or_update_interface(
@@ -117,7 +166,7 @@ void upf::from_yaml(const YAML::Node& node) {
   create_or_update_interface(
       UPF_CONFIG_N6_LABEL, node, upf_config_yaml::get_default_n6_interface());
 
-  // Load UPF specified parameter
+  // Iterate through top-level keys of the 'upf' specific section of config
   for (const auto& elem : node) {
     auto key = elem.first.as<std::string>();
 
@@ -134,19 +183,27 @@ void upf::from_yaml(const YAML::Node& node) {
     }
 
     if (key == UPF_CONFIG_SMF_LIST) {
-      for (const auto& yaml_sub : node[UPF_CONFIG_SMF_LIST]) {
-        string_config_value m_smf;
+      m_smf_list.clear(); // Clear previous list if any
+      for (const auto& yaml_sub : elem.second) { // elem.second should be the list node for SMFs
+        string_config_value m_smf_host_cfg_val(key+"_host", ""); // Temporary config value
         if (yaml_sub["host"]) {
-          m_smf.from_yaml(yaml_sub["host"]);
-          m_smf_list.push_back(m_smf);
+          m_smf_host_cfg_val.from_yaml(yaml_sub["host"]);
+          m_smf_list.push_back(m_smf_host_cfg_val);
         }
       }
     }
 
     if (key == UPF_CONFIG_UPF_INFO) {
-      nlohmann::json j = oai::utils::conversions::yaml_to_json(
-          node[UPF_CONFIG_UPF_INFO], false);
-      nlohmann::from_json(j, m_upf_info);
+        // Use the new helper function for initial loading as well to keep logic centralized
+        // Lock not strictly needed here if from_yaml is guaranteed to be called only during
+        // single-threaded initialization phase.
+        oai::model::nrf::UpfInfo temp_initial_upf_info;
+        if (parse_and_validate_upf_info(elem.second, temp_initial_upf_info)) {
+            m_upf_info = temp_initial_upf_info; // Assign to the member
+        } else {
+            Logger::system().error("Failed to parse initial UpfInfo from configuration. UPF Info might use defaults or be empty.\\n");
+            // m_upf_info retains its constructor-initialized default value
+        }
     }
   }
 }
@@ -181,17 +238,17 @@ std::string upf::to_string(const std::string& indent) const {
 }
 
 //------------------------------------------------------------------------------
-const uint32_t upf::get_instance_id() const {
+uint32_t upf::get_instance_id() const {
   return m_instance_id.get_value();
 }
 
 //------------------------------------------------------------------------------
-const std::string upf::get_remote_n6() const {
+std::string upf::get_remote_n6() const {
   return m_remote_n6.get_value();
 }
 
 //------------------------------------------------------------------------------
-const std::vector<string_config_value> upf::get_smf_list() const {
+std::vector<string_config_value> upf::get_smf_list() const {
   return m_smf_list;
 }
 
@@ -216,9 +273,11 @@ const upf_support_features& upf::get_support_features() const {
 }
 
 //------------------------------------------------------------------------------
-const oai::model::nrf::UpfInfo& upf::get_upf_info() const {
+oai::model::nrf::UpfInfo upf::get_upf_info() const {
+  std::lock_guard<std::mutex> lock(m_upf_info_mutex);
   return m_upf_info;
 }
+
 const std::map<std::string, upf_interface_config>& upf::get_interfaces() const {
   return m_interfaces;
 }
@@ -245,7 +304,10 @@ void upf::validate() {
   for (auto& iface : m_interfaces) {
     iface.second.validate();
   }
-  m_upf_info.validate();
+  std::stringstream upf_info_validation_ss;
+  if (!m_upf_info.validate(upf_info_validation_ss)) {
+      throw std::runtime_error("UPF Info validation failed: " + upf_info_validation_ss.str());
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -524,6 +586,81 @@ interface_cfg_t upf_interface_config::to_interface_config() const {
   cfg.if_name = get_if_name();
 
   return cfg;
+}
+
+void upf::trigger_pfcp_node_reports() {
+    Logger::system().info("Initiating PFCP Node Reports to SMFs due to UpfInfo change.\\n");
+
+    oai::model::nrf::UpfInfo current_dynamic_upf_info = this->get_upf_info(); 
+
+    pfcp::node_id_t upf_node_id_val = {};
+    bool node_id_found = false;
+    // Get N4 interface configuration from this UPF instance
+    const auto& iface_map = this->get_interfaces(); // Assuming get_interfaces() is a const getter like get_upf_info()
+    auto it_n4 = iface_map.find(UPF_CONFIG_N4_LABEL); // UPF_CONFIG_N4_LABEL is "n4"
+
+    if (it_n4 != iface_map.end()) {
+        const upf_interface_config& n4_if_config = it_n4->second;
+        // local_interface (base of upf_interface_config) has get_addr4() which should be populated.
+        struct in_addr n4_addr = n4_if_config.get_addr4(); // Assuming get_addr4() exists and returns in_addr
+        if (n4_addr.s_addr != 0) {
+            upf_node_id_val.node_id_type = pfcp::NODE_ID_TYPE_IPV4_ADDRESS;
+            upf_node_id_val.u1.ipv4_address = n4_addr;
+            node_id_found = true;
+            Logger::system().info("Using UPF Node ID (IPv4 from m_interfaces[n4]): {}\\n", upf_node_id_val.toString().c_str());
+        } else {
+            Logger::system().warn("N4 interface IP address is 0 in m_interfaces. Cannot form UPF Node ID.\\n");
+        }
+    } else {
+        Logger::system().warn("N4 interface configuration not found in m_interfaces. Cannot form UPF Node ID.\\n");
+    }
+
+    if (!node_id_found) {
+        Logger::system().error("Failed to determine UPF Node ID for PFCP Node Report. Skipping PFCP notification.\\n");
+        return;
+    }
+
+    oai::upf::app::pfcp_associations::get_instance().send_node_report_to_all_smfs(current_dynamic_upf_info, upf_node_id_val);
+}
+
+bool upf::reload_upf_info_from_node(const YAML::Node& upf_info_yaml_node) {
+    oai::model::nrf::UpfInfo temp_reloaded_upf_info;
+
+    if (!parse_and_validate_upf_info(upf_info_yaml_node, temp_reloaded_upf_info)) {
+        Logger::system().error("Reloading UpfInfo failed during parsing or validation. Configuration not updated.\\n");
+        return false; 
+    }
+
+    bool info_changed = false;
+    oai::model::nrf::UpfInfo info_to_propagate; // To store the info that needs to be sent out
+
+    {
+        std::lock_guard<std::mutex> lock(m_upf_info_mutex);
+        if (m_upf_info != temp_reloaded_upf_info) { 
+            m_upf_info = temp_reloaded_upf_info; 
+            info_to_propagate = m_upf_info; // Get a copy of the newly set info
+            Logger::system().info("m_upf_info has been successfully updated with reloaded configuration.\\n");
+            info_changed = true;
+        } else {
+            Logger::system().info("Reloaded UpfInfo is identical to current. No update applied or signaled.\\n");
+        }
+    }
+    
+    if (info_changed) {
+        if (upf_nrf_inst /* && some_way_to_check_nrf_registration_is_enabled() */ ) { 
+            Logger::system().info("Triggering NRF profile update due to UpfInfo change.\\n");
+            if (!upf_nrf_inst->trigger_nrf_profile_update(info_to_propagate)) { 
+                Logger::system().error("NRF profile update failed after UpfInfo change.\\n");
+            }
+        } else if (!upf_nrf_inst) {
+             Logger::system().warn("upf_nrf_inst is null, skipping NRF profile update.\\n");
+        }
+        
+        this->trigger_pfcp_node_reports(); 
+    } else {
+        Logger::system().info("No change in UpfInfo, NRF/SMF notification skipped.\\n");
+    }
+    return true;
 }
 
 }  // namespace oai::config

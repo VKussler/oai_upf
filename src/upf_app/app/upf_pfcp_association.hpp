@@ -30,6 +30,7 @@
 
 #include "3gpp_29.244.h"
 #include "itti.hpp"
+#include "UpfInfo.h"
 
 #include <folly/AtomicHashMap.h>
 #include <folly/AtomicLinkedList.h>
@@ -165,6 +166,8 @@ class pfcp_associations {
   void timeout_heartbeat_request(timer_id_t timer_id, uint64_t arg2_user);
 
   void handle_receive_heartbeat_response(const uint64_t trxn_id);
+
+  void send_node_report_to_all_smfs(const oai::model::nrf::UpfInfo& current_upf_info, const pfcp::node_id_t& upf_node_id);
 };
 }  // namespace app
 }  // namespace upf

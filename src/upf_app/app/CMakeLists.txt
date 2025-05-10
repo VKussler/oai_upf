@@ -52,5 +52,6 @@ add_library (APP STATIC
   upf_n4.cpp
   upf_profile.cpp
   upf_nrf.cpp
-  upf_config_yaml.cpp  
+  upf_config_yaml.cpp
+  config_file_monitor.cpp
   )  
