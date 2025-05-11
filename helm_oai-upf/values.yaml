@@ -4,7 +4,7 @@ kubernetesDistribution: Vanilla  #Vanilla for community kubernetes distribution 
 ## To know more about them follow this tutorial https://gitlab.eurecom.fr/oai/cn5g/oai-cn5g-fed/-/tree/master/openshift
 nfimage:
   repository: docker.io/kussler/oai_upf # dockerhub oaisoftwarealliance/oai-upf
-  version: v-clean-20240510a          #image tag, develop tag for experimental features
+  version: v-clean-2024051d         #image tag, develop tag for experimental features
   # pullPolicy: IfNotPresent or Never or Always
   pullPolicy: IfNotPresent
 

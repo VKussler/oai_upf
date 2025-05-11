@@ -315,6 +315,7 @@ void upf_nf_profile::from_json(const nlohmann::json& data) {
   if (data.find("ipv4Addresses") != data.end()) {
     nlohmann::json addresses = data["ipv4Addresses"];
 
+    ipv4_addresses.clear(); // Clear the existing list first
     for (auto it : addresses) {
       struct in_addr addr4 = {};
       std::string address  = it.get<std::string>();
